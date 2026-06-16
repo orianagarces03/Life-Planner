@@ -1,12 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <rect width="100" height="100" rx="20" fill="#0f0f13"/>
-  <rect x="20" y="25" width="60" height="55" rx="8" fill="none" stroke="#c8f55a" stroke-width="4"/>
-  <line x1="20" y1="40" x2="80" y2="40" stroke="#c8f55a" stroke-width="3"/>
-  <line x1="35" y1="25" x2="35" y2="18" stroke="#c8f55a" stroke-width="3" stroke-linecap="round"/>
-  <line x1="65" y1="25" x2="65" y2="18" stroke="#c8f55a" stroke-width="3" stroke-linecap="round"/>
-  <rect x="30" y="50" width="12" height="12" rx="2" fill="#c8f55a"/>
-  <rect x="48" y="50" width="12" height="12" rx="2" fill="#7c6cfc"/>
-  <rect x="66" y="50" width="12" height="12" rx="2" fill="#ff7a5c"/>
-  <rect x="30" y="67" width="12" height="8" rx="2" fill="#55efc4"/>
-  <rect x="48" y="67" width="12" height="8" rx="2" fill="#f5c842"/>
+  <!-- White background with rounded corners -->
+  <rect width="100" height="100" rx="22" fill="#ffffff"/>
+  <!-- Clock circle -->
+  <circle cx="50" cy="52" r="28" fill="none" stroke="#FFB3E5" stroke-width="1.5"/>
+  <!-- Hour markers -->
+  <line x1="50" y1="27" x2="50" y2="32" stroke="#FFB3E5" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="50" y1="72" x2="50" y2="77" stroke="#FFB3E5" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="25" y1="52" x2="30" y2="52" stroke="#FFB3E5" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="70" y1="52" x2="75" y2="52" stroke="#FFB3E5" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Hour hand (pointing to 10) -->
+  <line x1="50" y1="52" x2="37" y2="40" stroke="#FFB3E5" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Minute hand (pointing to 2) -->
+  <line x1="50" y1="52" x2="62" y2="35" stroke="#FFB3E5" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Center dot -->
+  <circle cx="50" cy="52" r="2.5" fill="#FFB3E5"/>
 </svg>
