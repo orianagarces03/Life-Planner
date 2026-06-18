@@ -160,7 +160,11 @@ export default function LifePlanner() {
   const [toast, setToast]         = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab]   = useState("theme");
+  const [colorPickerCtx, setColorPickerCtx] = useState(null); // { type: 'accent'|'category'|'note', key }
   const [stickers, setStickers] = useState([]); // {id, emoji or imgSrc, x, y}
+  const [notes, setNotes] = useState([]); // {id, text, x, y, date}
+  const [openNoteId, setOpenNoteId] = useState(null);
+  const [noteDraft, setNoteDraft] = useState("");
   const [draggingId, setDraggingId] = useState(null);
   const dragOffset = useRef({ x: 0, y: 0 });
 
@@ -180,6 +184,7 @@ export default function LifePlanner() {
         if (parsed.theme) setTheme(t => ({ ...t, ...parsed.theme }));
         if (parsed.cats) setCats(c => ({ ...c, ...parsed.cats }));
         if (parsed.stickers) setStickers(parsed.stickers);
+        if (parsed.notes) setNotes(parsed.notes);
       }
     } catch {
       // no saved settings yet, or corrupted — defaults stay
@@ -188,15 +193,15 @@ export default function LifePlanner() {
     }
   }, []);
 
-  // Save theme + category + sticker settings whenever they change (after initial load)
+  // Save theme + category + sticker + note settings whenever they change (after initial load)
   useEffect(() => {
     if (!settingsLoaded) return;
     try {
-      localStorage.setItem('planner-settings', JSON.stringify({ theme, cats, stickers }));
+      localStorage.setItem('planner-settings', JSON.stringify({ theme, cats, stickers, notes }));
     } catch {
       // storage full or blocked; not critical to block UI
     }
-  }, [theme, cats, stickers, settingsLoaded]);
+  }, [theme, cats, stickers, notes, settingsLoaded]);
 
   // Show splash every time the app opens
   useEffect(() => {
@@ -389,6 +394,41 @@ export default function LifePlanner() {
     e.target.value = "";
   }
 
+  // ── Sticky note handlers ──
+  function addNote() {
+    const id = `note-${Date.now()}`;
+    const newNote = {
+      id,
+      text: "",
+      color: theme.accent,
+      date: todayStr,
+    };
+    setNotes(prev => [...prev, newNote]);
+    setOpenNoteId(id);
+    setNoteDraft("");
+  }
+
+  function openNote(note) {
+    setOpenNoteId(note.id);
+    setNoteDraft(note.text);
+  }
+
+  function closeNote() {
+    if (openNoteId) {
+      setNotes(prev => prev.map(n => n.id === openNoteId
+        ? { ...n, text: noteDraft, date: noteDraft.trim() ? (n.text.trim() ? n.date : todayStr) : n.date }
+        : n
+      ).filter(n => n.id !== openNoteId || noteDraft.trim() !== "" || n.text.trim() !== ""));
+    }
+    setOpenNoteId(null);
+    setNoteDraft("");
+  }
+
+  function deleteNote(id) {
+    setNotes(prev => prev.filter(n => n.id !== id));
+    if (openNoteId === id) { setOpenNoteId(null); setNoteDraft(""); }
+  }
+
   const upcoming = [...allEvents]
     .filter(e=>e.date>=todayStr&&(filterCat==="all"||e.category===filterCat))
     .sort((a,b)=>a.date.localeCompare(b.date)).slice(0,30);
@@ -403,7 +443,7 @@ export default function LifePlanner() {
     eyebrow:   { fontSize:"0.68rem", letterSpacing:"0.18em", textTransform:"uppercase", color:T.accent, marginBottom:"0.4rem" },
     h1:        { fontFamily:`'${T.headingFont}', sans-serif`, fontSize:"clamp(1.6rem,5vw,2.4rem)", fontWeight:800, letterSpacing:"-0.02em", lineHeight:1.1 },
     topBar:    { display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"1.25rem" },
-    settingsBtn:{ background:T.surface, border:`1px solid ${T.border}`, borderRadius:8, color:T.muted, padding:"0.35rem 0.7rem", cursor:"pointer", fontSize:"0.85rem", marginTop:"0.25rem" },
+    settingsBtn:{ background:T.surface, border:`1px solid ${T.border}`, borderRadius:7, color:T.muted, padding:"0.25rem 0.5rem", cursor:"pointer", fontSize:"0.7rem", marginTop:"0.2rem" },
     statusBar: (st)=>({ display:"flex", alignItems:"center", gap:"0.5rem", background: st==="ok"?"rgba(85,239,196,0.08)":st==="error"?"rgba(255,122,92,0.08)":"rgba(200,245,90,0.06)", border:`1px solid ${st==="ok"?"rgba(85,239,196,0.2)":st==="error"?"rgba(255,122,92,0.2)":"rgba(200,245,90,0.15)"}`, borderRadius:8, padding:"0.45rem 0.75rem", fontSize:"0.78rem", color:st==="ok"?"#55efc4":st==="error"?"#ff7a5c":T.accent, marginBottom:"1rem" }),
     tabs:      { display:"flex", gap:"0.5rem", marginBottom:"1.25rem" },
     tab:       (a)=>({ padding:"0.45rem 1rem", borderRadius:"100px", fontSize:"0.82rem", fontWeight:500, cursor:"pointer", border:"1px solid", borderColor:a?T.accent:T.border, background:a?T.accent+"1a":T.surface, color:a?T.accent:T.muted }),
@@ -456,6 +496,146 @@ export default function LifePlanner() {
   };
 
   // ── Settings panel render ──
+  // ── Draggable color picker (HSL square + hue strip) ──
+  // Stays open while dragging; only closes via the Done button or backdrop tap.
+  function ColorPickerPopover({ initialColor, onApply, onClose }) {
+    function hexToHsl(hex) {
+      let r = parseInt(hex.slice(1,3),16)/255, g = parseInt(hex.slice(3,5),16)/255, b = parseInt(hex.slice(5,7),16)/255;
+      const max = Math.max(r,g,b), min = Math.min(r,g,b);
+      let h, s, l = (max+min)/2;
+      if (max === min) { h = 0; s = 0; }
+      else {
+        const d = max - min;
+        s = l > 0.5 ? d/(2-max-min) : d/(max+min);
+        if (max === r) h = ((g-b)/d + (g < b ? 6 : 0));
+        else if (max === g) h = (b-r)/d + 2;
+        else h = (r-g)/d + 4;
+        h *= 60;
+      }
+      return { h, s: s*100, l: l*100 };
+    }
+    function hslToHex(h, s, l) {
+      s /= 100; l /= 100;
+      const c = (1-Math.abs(2*l-1))*s, x = c*(1-Math.abs((h/60)%2-1)), m = l-c/2;
+      let r,g,b;
+      if (h<60) [r,g,b]=[c,x,0]; else if (h<120) [r,g,b]=[x,c,0]; else if (h<180) [r,g,b]=[0,c,x];
+      else if (h<240) [r,g,b]=[0,x,c]; else if (h<300) [r,g,b]=[x,0,c]; else [r,g,b]=[c,0,x];
+      const toHex = v => Math.round((v+m)*255).toString(16).padStart(2,"0");
+      return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+    }
+
+    const initHsl = hexToHsl(initialColor || "#c8f55a");
+    const [hue, setHue] = useState(initHsl.h);
+    const [sat, setSat] = useState(initHsl.s);
+    const [light, setLight] = useState(initHsl.l);
+    const squareRef = useRef(null);
+    const hueRef = useRef(null);
+    const [draggingSquare, setDraggingSquare] = useState(false);
+    const [draggingHue, setDraggingHue] = useState(false);
+
+    const currentHex = hslToHex(hue, sat, light);
+
+    function updateFromSquare(clientX, clientY) {
+      const rect = squareRef.current.getBoundingClientRect();
+      const x = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      const y = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+      setSat(x * 100);
+      setLight(100 - y * 100);
+    }
+    function updateFromHue(clientX) {
+      const rect = hueRef.current.getBoundingClientRect();
+      const x = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      setHue(x * 360);
+    }
+
+    function onSquareDown(e) {
+      e.preventDefault();
+      setDraggingSquare(true);
+      const cx = e.clientX ?? e.touches?.[0]?.clientX;
+      const cy = e.clientY ?? e.touches?.[0]?.clientY;
+      updateFromSquare(cx, cy);
+    }
+    function onHueDown(e) {
+      e.preventDefault();
+      setDraggingHue(true);
+      const cx = e.clientX ?? e.touches?.[0]?.clientX;
+      updateFromHue(cx);
+    }
+    function onMove(e) {
+      if (draggingSquare) {
+        const cx = e.clientX ?? e.touches?.[0]?.clientX;
+        const cy = e.clientY ?? e.touches?.[0]?.clientY;
+        if (cx == null) return;
+        updateFromSquare(cx, cy);
+      } else if (draggingHue) {
+        const cx = e.clientX ?? e.touches?.[0]?.clientX;
+        if (cx == null) return;
+        updateFromHue(cx);
+      }
+    }
+    function onUp() { setDraggingSquare(false); setDraggingHue(false); }
+
+    return (
+      <div
+        style={{ position:"fixed", inset:0, zIndex:600, background:"rgba(0,0,0,0.65)", display:"flex", alignItems:"center", justifyContent:"center", padding:"1.5rem" }}
+        onClick={(e)=>{ if (e.target===e.currentTarget) onClose(); }}
+        onMouseMove={onMove} onMouseUp={onUp} onTouchMove={onMove} onTouchEnd={onUp}
+      >
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:16, padding:"1.25rem", width:"100%", maxWidth:300 }}>
+          <div style={{ fontSize:"0.85rem", fontWeight:600, color:T.text, marginBottom:"0.9rem", fontFamily:`'${T.headingFont}', sans-serif` }}>Pick a color</div>
+
+          {/* Saturation/Lightness square */}
+          <div
+            ref={squareRef}
+            onMouseDown={onSquareDown}
+            onTouchStart={onSquareDown}
+            style={{
+              position:"relative", width:"100%", height:160, borderRadius:10, marginBottom:"0.9rem",
+              background:`linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, hsl(${hue},100%,50%))`,
+              touchAction:"none", cursor:"crosshair", border:`1px solid ${T.border}`,
+            }}
+          >
+            <div style={{
+              position:"absolute", left:`${sat}%`, top:`${100-light}%`,
+              width:16, height:16, borderRadius:"50%", border:"2px solid white",
+              boxShadow:"0 0 0 1px rgba(0,0,0,0.4)", transform:"translate(-50%,-50%)", pointerEvents:"none",
+              background: currentHex,
+            }} />
+          </div>
+
+          {/* Hue strip */}
+          <div
+            ref={hueRef}
+            onMouseDown={onHueDown}
+            onTouchStart={onHueDown}
+            style={{
+              position:"relative", width:"100%", height:20, borderRadius:100, marginBottom:"1rem",
+              background:"linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00)",
+              touchAction:"none", cursor:"pointer", border:`1px solid ${T.border}`,
+            }}
+          >
+            <div style={{
+              position:"absolute", left:`${(hue/360)*100}%`, top:"50%",
+              width:20, height:20, borderRadius:"50%", border:"2px solid white",
+              boxShadow:"0 0 0 1px rgba(0,0,0,0.4)", transform:"translate(-50%,-50%)", pointerEvents:"none",
+              background: `hsl(${hue},100%,50%)`,
+            }} />
+          </div>
+
+          <div style={{ display:"flex", alignItems:"center", gap:"0.6rem", marginBottom:"1rem" }}>
+            <div style={{ width:28, height:28, borderRadius:8, background:currentHex, border:`1px solid ${T.border}`, flexShrink:0 }} />
+            <span style={{ fontSize:"0.8rem", color:T.muted, fontFamily:"monospace" }}>{currentHex}</span>
+          </div>
+
+          <div style={{ display:"flex", gap:"0.5rem" }}>
+            <button style={s.cancelBtn} onClick={onClose}>Cancel</button>
+            <button style={s.saveBtn} onClick={()=>{ onApply(currentHex); onClose(); }}>Done</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function SettingsPanel() {
     const [localCustomH, setLocalCustomH] = useState(customHeading);
     const [localCustomB, setLocalCustomB] = useState(customBody);
@@ -499,9 +679,12 @@ export default function LifePlanner() {
                   title={p.label} onClick={()=>setTheme(t=>({...t,accent:p.value}))} />
               ))}
             </div>
-            <input style={{...s.colorInput, marginTop:"0.65rem"}} type="color" value={theme.accent}
-              onChange={e=>setTheme(t=>({...t,accent:e.target.value}))} title="Pick any color" />
-            <div style={{fontSize:"0.72rem", color:T.muted, marginTop:"0.3rem"}}>Or pick any custom color above ↑</div>
+            <button style={{...s.cancelBtn, marginTop:"0.65rem", width:"100%", display:"flex", alignItems:"center", justifyContent:"center", gap:"0.5rem"}}
+              onClick={()=>setColorPickerCtx({type:"accent"})}>
+              <span style={{width:16,height:16,borderRadius:"50%",background:theme.accent,display:"inline-block",border:`1px solid ${T.border}`}} />
+              Custom color…
+            </button>
+            <div style={{fontSize:"0.72rem", color:T.muted, marginTop:"0.3rem"}}>Or pick a preset above ↑</div>
             <div style={s.divider} />
             {/* Font size */}
             <div style={{...s.label, marginBottom:"0.5rem"}}>Font size</div>
@@ -544,8 +727,11 @@ export default function LifePlanner() {
             <div style={s.label}>Category colors</div>
             {Object.entries(cats).map(([k,v])=>(
               <div key={k} style={s.catColorRow}>
-                <input type="color" value={v.color} style={s.catColorSwatch}
-                  onChange={e=>setCats(prev=>({...prev,[k]:{...prev[k],color:e.target.value}}))} />
+                <button
+                  onClick={()=>setColorPickerCtx({type:"category", key:k})}
+                  style={{...s.catColorSwatch, background:v.color, cursor:"pointer"}}
+                  title="Tap to change color"
+                />
                 <span style={{fontSize:"0.88rem", color:T.text}}>{v.emoji} {v.label}</span>
               </div>
             ))}
@@ -594,6 +780,8 @@ export default function LifePlanner() {
             )}
           </>
         )}
+
+        {/* NOTES TAB */}
       </div>
     );
   }
@@ -674,6 +862,7 @@ export default function LifePlanner() {
         <div style={s.tabs}>
           <button style={s.tab(view==="calendar")} onClick={()=>setView("calendar")}>📅 Calendar</button>
           <button style={s.tab(view==="list")}     onClick={()=>setView("list")}>📋 Upcoming</button>
+          <button style={s.tab(view==="notes")}    onClick={()=>setView("notes")}>🗒️ Notes</button>
         </div>
 
         {/* ── CALENDAR VIEW ── */}
@@ -755,6 +944,53 @@ export default function LifePlanner() {
                 })
             }
             <button style={s.addBtn} onClick={()=>openAdd(today.getDate())}>+ Add new event</button>
+          </>
+        )}
+
+        {/* ── NOTES VIEW ── */}
+        {view==="notes" && (
+          <>
+            <div style={{fontSize:"0.82rem", color:T.muted, marginBottom:"1rem"}}>
+              Quick notes — tap one to write, drag the colored dot to recolor it.
+            </div>
+            {notes.length===0
+              ? <div style={s.emptyState}>No notes yet. Add your first one below!</div>
+              : (
+                <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.6rem", marginBottom:"1rem"}}>
+                  {notes.map(n=>(
+                    <div key={n.id}
+                      onClick={()=>openNote(n)}
+                      style={{
+                        background: (n.color||T.accent)+"14",
+                        border:`1px solid ${(n.color||T.accent)}40`,
+                        borderLeft:`4px solid ${n.color||T.accent}`,
+                        borderRadius:10, padding:"0.75rem 0.85rem",
+                        cursor:"pointer", position:"relative", minHeight:90,
+                        display:"flex", flexDirection:"column", justifyContent:"space-between",
+                      }}>
+                      <div style={{
+                        fontSize:"0.8rem", color:T.text, lineHeight:1.4,
+                        overflow:"hidden", display:"-webkit-box", WebkitLineClamp:4, WebkitBoxOrient:"vertical",
+                        wordBreak:"break-word",
+                      }}>
+                        {n.text.trim() ? n.text : <span style={{color:T.muted}}>Tap to write…</span>}
+                      </div>
+                      <div style={{fontSize:"0.66rem", color:T.muted, marginTop:"0.4rem"}}>
+                        {MONTHS[parseInt(n.date.split("-")[1])-1].slice(0,3)} {parseInt(n.date.split("-")[2])}
+                      </div>
+                      <button
+                        onClick={(e)=>{ e.stopPropagation(); deleteNote(n.id); }}
+                        style={{
+                          position:"absolute", top:-6, right:-6, width:18, height:18, borderRadius:"50%",
+                          background:T.card, border:`1px solid ${T.border}`, color:T.muted, fontSize:"0.7rem",
+                          display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", padding:0, lineHeight:1,
+                        }}>×</button>
+                    </div>
+                  ))}
+                </div>
+              )
+            }
+            <button style={s.addBtn} onClick={addNote}>+ Add note</button>
           </>
         )}
       </div>
@@ -879,6 +1115,81 @@ export default function LifePlanner() {
           >×</button>
         </div>
       ))}
+
+      {/* ── NOTE EDITING OVERLAY (centered) ── */}
+      {openNoteId && (() => {
+        const activeNote = notes.find(n => n.id === openNoteId);
+        return (
+          <div
+            style={{
+              position: "fixed", inset: 0, zIndex: 500,
+              background: "rgba(0,0,0,0.6)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              padding: "1.5rem",
+            }}
+            onClick={(e) => { if (e.target === e.currentTarget) closeNote(); }}
+          >
+            <div style={{
+              background: T.surface,
+              border: `1px solid ${T.border}`,
+              borderTop: `4px solid ${activeNote?.color || T.accent}`,
+              borderRadius: 16,
+              padding: "1.25rem",
+              width: "100%",
+              maxWidth: 340,
+              boxShadow: "0 20px 50px rgba(0,0,0,0.5)",
+            }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.75rem" }}>
+                <button
+                  onClick={()=>setColorPickerCtx({type:"note", key:openNoteId})}
+                  style={{
+                    display:"flex", alignItems:"center", gap:"0.4rem",
+                    background:T.bg, border:`1px solid ${T.border}`, borderRadius:100,
+                    padding:"0.25rem 0.6rem", cursor:"pointer", fontSize:"0.72rem", color:T.muted,
+                  }}>
+                  <span style={{width:14,height:14,borderRadius:"50%",background:activeNote?.color||T.accent,display:"inline-block"}} />
+                  Color
+                </button>
+                <span style={{ fontSize: "0.7rem", color: T.muted }}>
+                  {activeNote ? `${MONTHS[parseInt(activeNote.date.split("-")[1])-1].slice(0,3)} ${parseInt(activeNote.date.split("-")[2])}` : ""}
+                </span>
+              </div>
+              <textarea
+                autoFocus
+                value={noteDraft}
+                onChange={(e) => setNoteDraft(e.target.value)}
+                placeholder="Write something…"
+                style={{
+                  width: "100%", minHeight: 180, background: "transparent",
+                  border: "none", outline: "none", resize: "none",
+                  color: T.text, fontFamily: `'${T.bodyFont}', sans-serif`,
+                  fontSize: "0.95rem", lineHeight: 1.6,
+                }}
+              />
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "0.75rem" }}>
+                <button style={s.saveBtn} onClick={closeNote}>Done</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── DRAGGABLE COLOR PICKER POPOVER ── */}
+      {colorPickerCtx && (
+        <ColorPickerPopover
+          initialColor={
+            colorPickerCtx.type === "accent" ? theme.accent
+            : colorPickerCtx.type === "category" ? cats[colorPickerCtx.key]?.color
+            : notes.find(n=>n.id===colorPickerCtx.key)?.color || theme.accent
+          }
+          onApply={(hex) => {
+            if (colorPickerCtx.type === "accent") setTheme(t=>({...t,accent:hex}));
+            else if (colorPickerCtx.type === "category") setCats(prev=>({...prev,[colorPickerCtx.key]:{...prev[colorPickerCtx.key],color:hex}}));
+            else if (colorPickerCtx.type === "note") setNotes(prev=>prev.map(n=>n.id===colorPickerCtx.key?{...n,color:hex}:n));
+          }}
+          onClose={() => setColorPickerCtx(null)}
+        />
+      )}
     </div>
   );
 }
