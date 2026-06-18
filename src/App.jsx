@@ -115,6 +115,17 @@ function catBg(color) {
   return color + "22";
 }
 
+// Returns '#000000' or '#ffffff' depending on which gives better contrast against the given hex color
+function getContrastColor(hex) {
+  if (!hex || hex.length < 7) return "#000000";
+  const r = parseInt(hex.slice(1,3), 16);
+  const g = parseInt(hex.slice(3,5), 16);
+  const b = parseInt(hex.slice(5,7), 16);
+  // Relative luminance (perceived brightness)
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.55 ? "#000000" : "#ffffff";
+}
+
 const DAYS   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const today  = new Date();
@@ -338,6 +349,25 @@ export default function LifePlanner() {
   function handlePointerMove(e) {
     if (!draggingId) return;
     const touches = e.touches;
+    const isNoteDrag = typeof draggingId === "string" && draggingId.startsWith("note-");
+
+    if (isNoteDrag) {
+      const noteId = draggingId.replace("note-", "");
+      const clientX = e.clientX ?? touches?.[0]?.clientX;
+      const clientY = e.clientY ?? touches?.[0]?.clientY;
+      if (clientX == null) return;
+      // Mark as moved once it exceeds a small threshold, so a simple tap still opens the note
+      const dx = clientX - (dragOffset.current.startX ?? clientX);
+      const dy = clientY - (dragOffset.current.startY ?? clientY);
+      if (Math.hypot(dx, dy) > 6) dragOffset.current.moved = true;
+      const xPct = ((clientX - dragOffset.current.offsetX) / window.innerWidth) * 100;
+      const yPct = ((clientY - dragOffset.current.offsetY) / window.innerHeight) * 100;
+      setNotes(prev => prev.map(n => n.id === noteId
+        ? { ...n, x: Math.max(0, Math.min(80, xPct)), y: Math.max(0, Math.min(88, yPct)) }
+        : n
+      ));
+      return;
+    }
 
     // Two fingers on the sticker → resize, ignore position changes
     if (touches && touches.length === 2) {
@@ -371,6 +401,18 @@ export default function LifePlanner() {
   }
 
   function handlePointerUp(e) {
+    // Note drag release — open the editor only if it was a tap (didn't actually move)
+    if (typeof draggingId === "string" && draggingId.startsWith("note-")) {
+      const noteId = draggingId.replace("note-", "");
+      if (!dragOffset.current.moved) {
+        const note = notes.find(n => n.id === noteId);
+        if (note) openNote(note);
+      }
+      setDraggingId(null);
+      dragOffset.current = {};
+      return;
+    }
+
     // If one finger lifted but one remains, switch back to drag mode cleanly
     if (e?.touches && e.touches.length === 1 && draggingId) {
       const rect = e.target?.getBoundingClientRect?.() || { left: 0, top: 0 };
@@ -402,6 +444,8 @@ export default function LifePlanner() {
       text: "",
       color: theme.accent,
       date: todayStr,
+      x: 8 + Math.random() * 55,
+      y: 8 + Math.random() * 55,
     };
     setNotes(prev => [...prev, newNote]);
     setOpenNoteId(id);
@@ -427,6 +471,23 @@ export default function LifePlanner() {
   function deleteNote(id) {
     setNotes(prev => prev.filter(n => n.id !== id));
     if (openNoteId === id) { setOpenNoteId(null); setNoteDraft(""); }
+  }
+
+  function handleNotePointerDown(e, note) {
+    e.stopPropagation();
+    const touches = e.touches;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clientX = e.clientX ?? touches?.[0]?.clientX ?? 0;
+    const clientY = e.clientY ?? touches?.[0]?.clientY ?? 0;
+    dragOffset.current = {
+      offsetX: clientX - rect.left,
+      offsetY: clientY - rect.top,
+      startX: clientX,
+      startY: clientY,
+      moved: false,
+      pinching: false,
+    };
+    setDraggingId(`note-${note.id}`);
   }
 
   const upcoming = [...allEvents]
@@ -951,45 +1012,64 @@ export default function LifePlanner() {
         {view==="notes" && (
           <>
             <div style={{fontSize:"0.82rem", color:T.muted, marginBottom:"1rem"}}>
-              Quick notes — tap one to write, drag the colored dot to recolor it.
+              Drag any note to move it around. Tap (without dragging) to open and write.
             </div>
-            {notes.length===0
-              ? <div style={s.emptyState}>No notes yet. Add your first one below!</div>
-              : (
-                <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0.6rem", marginBottom:"1rem"}}>
-                  {notes.map(n=>(
-                    <div key={n.id}
-                      onClick={()=>openNote(n)}
-                      style={{
-                        background: (n.color||T.accent)+"14",
-                        border:`1px solid ${(n.color||T.accent)}40`,
-                        borderLeft:`4px solid ${n.color||T.accent}`,
-                        borderRadius:10, padding:"0.75rem 0.85rem",
-                        cursor:"pointer", position:"relative", minHeight:90,
-                        display:"flex", flexDirection:"column", justifyContent:"space-between",
-                      }}>
-                      <div style={{
-                        fontSize:"0.8rem", color:T.text, lineHeight:1.4,
-                        overflow:"hidden", display:"-webkit-box", WebkitLineClamp:4, WebkitBoxOrient:"vertical",
-                        wordBreak:"break-word",
-                      }}>
-                        {n.text.trim() ? n.text : <span style={{color:T.muted}}>Tap to write…</span>}
-                      </div>
-                      <div style={{fontSize:"0.66rem", color:T.muted, marginTop:"0.4rem"}}>
-                        {MONTHS[parseInt(n.date.split("-")[1])-1].slice(0,3)} {parseInt(n.date.split("-")[2])}
-                      </div>
-                      <button
-                        onClick={(e)=>{ e.stopPropagation(); deleteNote(n.id); }}
-                        style={{
-                          position:"absolute", top:-6, right:-6, width:18, height:18, borderRadius:"50%",
-                          background:T.card, border:`1px solid ${T.border}`, color:T.muted, fontSize:"0.7rem",
-                          display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", padding:0, lineHeight:1,
-                        }}>×</button>
-                    </div>
-                  ))}
+            <div style={{
+              position:"relative", width:"100%", height:"60vh", minHeight:380,
+              background:T.surface, border:`1px solid ${T.border}`, borderRadius:14,
+              overflow:"hidden", marginBottom:"1rem",
+            }}>
+              {notes.length===0 && (
+                <div style={{...s.emptyState, position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center"}}>
+                  No notes yet. Add your first one below!
                 </div>
-              )
-            }
+              )}
+              {notes.map(n=>{
+                const bgColor = n.color || T.accent;
+                const textColor = getContrastColor(bgColor);
+                const mutedTextColor = textColor === "#000000" ? "rgba(0,0,0,0.55)" : "rgba(255,255,255,0.7)";
+                const isDraggingThis = draggingId === `note-${n.id}`;
+                return (
+                  <div key={n.id}
+                    onMouseDown={(e)=>handleNotePointerDown(e,n)}
+                    onTouchStart={(e)=>handleNotePointerDown(e,n)}
+                    style={{
+                      position:"absolute",
+                      left:`${n.x ?? 10}%`,
+                      top:`${n.y ?? 10}%`,
+                      width:130, minHeight:100,
+                      background: bgColor,
+                      borderRadius:10, padding:"0.7rem 0.8rem",
+                      cursor: isDraggingThis ? "grabbing" : "grab",
+                      userSelect:"none", touchAction:"none",
+                      display:"flex", flexDirection:"column", justifyContent:"space-between",
+                      boxShadow: isDraggingThis ? "0 12px 24px rgba(0,0,0,0.35)" : "0 2px 8px rgba(0,0,0,0.18)",
+                      transition: isDraggingThis ? "none" : "box-shadow 0.15s",
+                      zIndex: isDraggingThis ? 50 : 1,
+                    }}>
+                    <div style={{
+                      fontSize:"0.78rem", color:textColor, lineHeight:1.4,
+                      overflow:"hidden", display:"-webkit-box", WebkitLineClamp:4, WebkitBoxOrient:"vertical",
+                      wordBreak:"break-word",
+                    }}>
+                      {n.text.trim() ? n.text : <span style={{color:mutedTextColor}}>Tap to write…</span>}
+                    </div>
+                    <div style={{fontSize:"0.64rem", color:mutedTextColor, marginTop:"0.4rem"}}>
+                      {MONTHS[parseInt(n.date.split("-")[1])-1].slice(0,3)} {parseInt(n.date.split("-")[2])}
+                    </div>
+                    <button
+                      onClick={(e)=>{ e.stopPropagation(); deleteNote(n.id); }}
+                      onMouseDown={(e)=>e.stopPropagation()}
+                      onTouchStart={(e)=>e.stopPropagation()}
+                      style={{
+                        position:"absolute", top:-6, right:-6, width:18, height:18, borderRadius:"50%",
+                        background:T.card, border:`1px solid ${T.border}`, color:T.muted, fontSize:"0.7rem",
+                        display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", padding:0, lineHeight:1,
+                      }}>×</button>
+                  </div>
+                );
+              })}
+            </div>
             <button style={s.addBtn} onClick={addNote}>+ Add note</button>
           </>
         )}
@@ -1119,6 +1199,11 @@ export default function LifePlanner() {
       {/* ── NOTE EDITING OVERLAY (centered) ── */}
       {openNoteId && (() => {
         const activeNote = notes.find(n => n.id === openNoteId);
+        const noteColor = activeNote?.color || T.accent;
+        const noteTextColor = getContrastColor(noteColor);
+        const noteMutedColor = noteTextColor === "#000000" ? "rgba(0,0,0,0.55)" : "rgba(255,255,255,0.7)";
+        const pillBg = noteTextColor === "#000000" ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.18)";
+        const pillBorder = noteTextColor === "#000000" ? "rgba(0,0,0,0.18)" : "rgba(255,255,255,0.3)";
         return (
           <div
             style={{
@@ -1130,9 +1215,7 @@ export default function LifePlanner() {
             onClick={(e) => { if (e.target === e.currentTarget) closeNote(); }}
           >
             <div style={{
-              background: T.surface,
-              border: `1px solid ${T.border}`,
-              borderTop: `4px solid ${activeNote?.color || T.accent}`,
+              background: noteColor,
               borderRadius: 16,
               padding: "1.25rem",
               width: "100%",
@@ -1144,13 +1227,13 @@ export default function LifePlanner() {
                   onClick={()=>setColorPickerCtx({type:"note", key:openNoteId})}
                   style={{
                     display:"flex", alignItems:"center", gap:"0.4rem",
-                    background:T.bg, border:`1px solid ${T.border}`, borderRadius:100,
-                    padding:"0.25rem 0.6rem", cursor:"pointer", fontSize:"0.72rem", color:T.muted,
+                    background:pillBg, border:`1px solid ${pillBorder}`, borderRadius:100,
+                    padding:"0.25rem 0.6rem", cursor:"pointer", fontSize:"0.72rem", color:noteTextColor,
                   }}>
-                  <span style={{width:14,height:14,borderRadius:"50%",background:activeNote?.color||T.accent,display:"inline-block"}} />
+                  <span style={{width:14,height:14,borderRadius:"50%",background:noteColor,display:"inline-block",border:`1px solid ${pillBorder}`}} />
                   Color
                 </button>
-                <span style={{ fontSize: "0.7rem", color: T.muted }}>
+                <span style={{ fontSize: "0.7rem", color: noteMutedColor }}>
                   {activeNote ? `${MONTHS[parseInt(activeNote.date.split("-")[1])-1].slice(0,3)} ${parseInt(activeNote.date.split("-")[2])}` : ""}
                 </span>
               </div>
@@ -1162,12 +1245,18 @@ export default function LifePlanner() {
                 style={{
                   width: "100%", minHeight: 180, background: "transparent",
                   border: "none", outline: "none", resize: "none",
-                  color: T.text, fontFamily: `'${T.bodyFont}', sans-serif`,
+                  color: noteTextColor, fontFamily: `'${T.bodyFont}', sans-serif`,
                   fontSize: "0.95rem", lineHeight: 1.6,
                 }}
               />
               <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "0.75rem" }}>
-                <button style={s.saveBtn} onClick={closeNote}>Done</button>
+                <button
+                  onClick={closeNote}
+                  style={{
+                    padding:"0.55rem 1.1rem", background:pillBg, border:`1px solid ${pillBorder}`,
+                    borderRadius:8, color:noteTextColor, fontWeight:600, fontSize:"0.85rem", cursor:"pointer",
+                    fontFamily:"inherit",
+                  }}>Done</button>
               </div>
             </div>
           </div>
