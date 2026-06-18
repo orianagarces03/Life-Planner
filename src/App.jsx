@@ -227,7 +227,23 @@ export default function LifePlanner() {
 
   // Resolved theme (merge dark/light)
   const T = theme.darkMode ? theme : { ...theme, ...LIGHT_OVERRIDES };
-  const fontUrl = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(T.headingFont)}:wght@400;600;700;800&family=${encodeURIComponent(T.bodyFont)}:wght@300;400;500&display=swap`;
+
+  // Reliably load the selected Google Fonts by injecting/updating a <link> in document.head.
+  // This is more dependable than a <link> rendered inline in JSX, which browsers can
+  // silently ignore on re-render when only the href changes.
+  useEffect(() => {
+    const fontUrl = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(T.headingFont)}:wght@400;500;600;700;800&family=${encodeURIComponent(T.bodyFont)}:wght@300;400;500;600&display=swap`;
+    let link = document.getElementById('planner-google-font');
+    if (!link) {
+      link = document.createElement('link');
+      link.id = 'planner-google-font';
+      link.rel = 'stylesheet';
+      document.head.appendChild(link);
+    }
+    if (link.href !== fontUrl) {
+      link.href = fontUrl;
+    }
+  }, [T.headingFont, T.bodyFont]);
 
   function showToast(msg, type="ok") {
     setToast({ msg, type });
@@ -353,6 +369,28 @@ export default function LifePlanner() {
 
     if (isNoteDrag) {
       const noteId = draggingId.replace("note-", "");
+
+      // Two fingers on the note → resize, ignore position changes
+      if (touches && touches.length === 2) {
+        if (!dragOffset.current.pinching) {
+          const dx0 = touches[0].clientX - touches[1].clientX;
+          const dy0 = touches[0].clientY - touches[1].clientY;
+          dragOffset.current.pinchStartDist = Math.hypot(dx0, dy0);
+          dragOffset.current.pinchStartScale = notes.find(n=>n.id===noteId)?.scale || 1;
+          dragOffset.current.pinching = true;
+          dragOffset.current.moved = true;
+        }
+        const dx = touches[0].clientX - touches[1].clientX;
+        const dy = touches[0].clientY - touches[1].clientY;
+        const dist = Math.hypot(dx, dy);
+        const ratio = dist / (dragOffset.current.pinchStartDist || dist);
+        const newScale = Math.max(0.5, Math.min(2.5, dragOffset.current.pinchStartScale * ratio));
+        setNotes(prev => prev.map(n => n.id === noteId ? { ...n, scale: newScale } : n));
+        return;
+      }
+
+      // Single finger → drag position (skip a beat right after releasing second finger)
+      if (dragOffset.current.pinching) return;
       const clientX = e.clientX ?? touches?.[0]?.clientX;
       const clientY = e.clientY ?? touches?.[0]?.clientY;
       if (clientX == null) return;
@@ -401,7 +439,21 @@ export default function LifePlanner() {
   }
 
   function handlePointerUp(e) {
-    // Note drag release — open the editor only if it was a tap (didn't actually move)
+    // If one finger lifted but one remains (mid pinch→drag transition), reset offset and keep dragging
+    if (e?.touches && e.touches.length === 1 && draggingId) {
+      const rect = e.target?.getBoundingClientRect?.() || { left: 0, top: 0 };
+      dragOffset.current = {
+        ...dragOffset.current,
+        offsetX: e.touches[0].clientX - rect.left,
+        offsetY: e.touches[0].clientY - rect.top,
+        startX: e.touches[0].clientX,
+        startY: e.touches[0].clientY,
+        pinching: false,
+      };
+      return;
+    }
+
+    // Note drag/pinch release — open the editor only if it was a tap (didn't move or resize)
     if (typeof draggingId === "string" && draggingId.startsWith("note-")) {
       const noteId = draggingId.replace("note-", "");
       if (!dragOffset.current.moved) {
@@ -413,16 +465,6 @@ export default function LifePlanner() {
       return;
     }
 
-    // If one finger lifted but one remains, switch back to drag mode cleanly
-    if (e?.touches && e.touches.length === 1 && draggingId) {
-      const rect = e.target?.getBoundingClientRect?.() || { left: 0, top: 0 };
-      dragOffset.current = {
-        offsetX: e.touches[0].clientX - rect.left,
-        offsetY: e.touches[0].clientY - rect.top,
-        pinching: false,
-      };
-      return;
-    }
     setDraggingId(null);
     dragOffset.current = {};
   }
@@ -446,6 +488,7 @@ export default function LifePlanner() {
       date: todayStr,
       x: 8 + Math.random() * 55,
       y: 8 + Math.random() * 55,
+      scale: 1,
     };
     setNotes(prev => [...prev, newNote]);
     setOpenNoteId(id);
@@ -476,6 +519,19 @@ export default function LifePlanner() {
   function handleNotePointerDown(e, note) {
     e.stopPropagation();
     const touches = e.touches;
+    if (touches && touches.length === 2) {
+      // Pinch start — record initial distance and note's current scale
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      dragOffset.current = {
+        pinchStartDist: Math.hypot(dx, dy),
+        pinchStartScale: note.scale || 1,
+        pinching: true,
+        moved: true, // a pinch should never trigger the tap-to-open behavior
+      };
+      setDraggingId(`note-${note.id}`);
+      return;
+    }
     const rect = e.currentTarget.getBoundingClientRect();
     const clientX = e.clientX ?? touches?.[0]?.clientX ?? 0;
     const clientY = e.clientY ?? touches?.[0]?.clientY ?? 0;
@@ -499,7 +555,7 @@ export default function LifePlanner() {
 
   // ── Styles ──
   const s = {
-    root:      { minHeight:"100vh", background:T.bg, color:T.text, fontFamily:`'${T.bodyFont}', sans-serif`, fontWeight:300, padding:"1.5rem 1rem 4rem", transition:"background 0.3s, color 0.3s", fontSize:`${(T.fontScale||1)*16}px` },
+    root:      { minHeight:"100dvh", background:T.bg, color:T.text, fontFamily:`'${T.bodyFont}', sans-serif`, fontWeight:300, padding:"1.5rem 1rem 4rem", transition:"background 0.3s, color 0.3s", fontSize:`${(T.fontScale||1)*16}px` },
     wrap:      { maxWidth:680, margin:"0 auto" },
     eyebrow:   { fontSize:"0.68rem", letterSpacing:"0.18em", textTransform:"uppercase", color:T.accent, marginBottom:"0.4rem" },
     h1:        { fontFamily:`'${T.headingFont}', sans-serif`, fontSize:"clamp(1.6rem,5vw,2.4rem)", fontWeight:800, letterSpacing:"-0.02em", lineHeight:1.1 },
@@ -513,7 +569,7 @@ export default function LifePlanner() {
     monthLabel:{ fontFamily:`'${T.headingFont}', sans-serif`, fontWeight:600, fontSize:"1rem", color:T.text },
     grid:      { display:"grid", gridTemplateColumns:"repeat(7, 1fr)", gap:"3px" },
     dayHead:   { textAlign:"center", fontSize:"0.68rem", color:T.muted, letterSpacing:"0.08em", textTransform:"uppercase", paddingBottom:"0.5rem" },
-    cell:      (isToday)=>({ background:isToday?T.accent+"1a":T.surface, border:`1px solid ${isToday?T.accent:T.border}`, borderRadius:8, minHeight:58, padding:"0.3rem 0.35rem", cursor:"pointer" }),
+    cell:      (isToday)=>({ background:isToday?T.accent+"1a":T.surface, border:`1px solid ${isToday?T.accent:T.border}`, borderRadius:8, minHeight:58, padding:"0.3rem 0.35rem", cursor:"pointer", transition:"transform 0.12s ease, background 0.15s" }),
     cellNum:   (isToday)=>({ fontSize:"0.75rem", fontWeight:isToday?600:400, color:isToday?T.accent:T.text, marginBottom:"0.2rem" }),
     dot:       (cat)=>({ display:"inline-block", width:6, height:6, borderRadius:"50%", background:cats[cat]?.color||"#aaa", margin:"1px" }),
     dotsRow:   { display:"flex", flexWrap:"wrap", gap:"1px", marginTop:"2px" },
@@ -638,11 +694,12 @@ export default function LifePlanner() {
 
     return (
       <div
+        className="planner-overlay-anim"
         style={{ position:"fixed", inset:0, zIndex:600, background:"rgba(0,0,0,0.65)", display:"flex", alignItems:"center", justifyContent:"center", padding:"1.5rem" }}
         onClick={(e)=>{ if (e.target===e.currentTarget) onClose(); }}
         onMouseMove={onMove} onMouseUp={onUp} onTouchMove={onMove} onTouchEnd={onUp}
       >
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:16, padding:"1.25rem", width:"100%", maxWidth:300 }}>
+        <div className="planner-pop-anim" style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:16, padding:"1.25rem", width:"100%", maxWidth:300 }}>
           <div style={{ fontSize:"0.85rem", fontWeight:600, color:T.text, marginBottom:"0.9rem", fontFamily:`'${T.headingFont}', sans-serif` }}>Pick a color</div>
 
           {/* Saturation/Lightness square */}
@@ -709,7 +766,7 @@ export default function LifePlanner() {
     }
 
     return (
-      <div style={s.settingsPanel}>
+      <div className="planner-pop-anim" style={{...s.settingsPanel, transformOrigin: "top right"}}>
         <div style={s.settingsPanelTitle}>
           <span>⚙️ Customize</span>
           <button onClick={()=>setShowSettings(false)} style={{...s.cancelBtn, flex:"none", padding:"0.25rem 0.65rem", fontSize:"0.8rem"}}>Done</button>
@@ -855,7 +912,6 @@ export default function LifePlanner() {
       onTouchMove={handlePointerMove}
       onTouchEnd={handlePointerUp}
     >
-      <link href={fontUrl} rel="stylesheet" />
 
       {/* ── SPLASH SCREEN (once per day) ── */}
       {showSplash && (
@@ -902,7 +958,7 @@ export default function LifePlanner() {
             <div style={s.eyebrow}>Life Planner · Google Calendar Sync</div>
             <h1 style={s.h1}>Your <span style={{color:T.accent}}>month,</span><br/>in one place.</h1>
           </div>
-          <button style={s.settingsBtn} onClick={()=>setShowSettings(v=>!v)}>⚙️ Customize</button>
+          <button className="planner-tappable" style={s.settingsBtn} onClick={()=>setShowSettings(v=>!v)}>⚙️ Customize</button>
         </div>
 
         {/* Settings panel */}
@@ -943,7 +999,7 @@ export default function LifePlanner() {
                 const d=i+1, ds=dateStr(d), isToday=ds===todayStr, evs=eventsForDay(d);
                 const holiday = CO_HOLIDAYS[ds];
                 return (
-                  <div key={d} style={{...s.cell(isToday), background: holiday && !isToday ? T.accent+"0d" : isToday ? T.accent+"1a" : T.surface, borderColor: holiday ? T.accent+"55" : isToday ? T.accent : T.border}} onClick={()=>openDay(d)}>
+                  <div key={d} className="planner-tappable" style={{...s.cell(isToday), background: holiday && !isToday ? T.accent+"0d" : isToday ? T.accent+"1a" : T.surface, borderColor: holiday ? T.accent+"55" : isToday ? T.accent : T.border}} onClick={()=>openDay(d)}>
                     <div style={s.cellNum(isToday)}>{d}</div>
                     {holiday && <div style={{fontSize:"0.55rem", color:T.accent, lineHeight:1.2, marginBottom:"1px", overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis"}} title={holiday}>{holiday.slice(0,2)}</div>}
                     <div style={s.dotsRow}>{evs.map(e=><span key={e.id} style={s.dot(e.category)} title={e.title}/>)}</div>
@@ -1012,7 +1068,7 @@ export default function LifePlanner() {
         {view==="notes" && (
           <>
             <div style={{fontSize:"0.82rem", color:T.muted, marginBottom:"1rem"}}>
-              Drag any note to move it around. Tap (without dragging) to open and write.
+              Drag any note to move it, pinch with two fingers to resize, tap (without dragging) to open and write.
             </div>
             <div style={{
               position:"relative", width:"100%", height:"60vh", minHeight:380,
@@ -1029,6 +1085,7 @@ export default function LifePlanner() {
                 const textColor = getContrastColor(bgColor);
                 const mutedTextColor = textColor === "#000000" ? "rgba(0,0,0,0.55)" : "rgba(255,255,255,0.7)";
                 const isDraggingThis = draggingId === `note-${n.id}`;
+                const noteScale = n.scale || 1;
                 return (
                   <div key={n.id}
                     onMouseDown={(e)=>handleNotePointerDown(e,n)}
@@ -1044,6 +1101,8 @@ export default function LifePlanner() {
                       userSelect:"none", touchAction:"none",
                       display:"flex", flexDirection:"column", justifyContent:"space-between",
                       boxShadow: isDraggingThis ? "0 12px 24px rgba(0,0,0,0.35)" : "0 2px 8px rgba(0,0,0,0.18)",
+                      transform: `scale(${noteScale})`,
+                      transformOrigin: "top left",
                       transition: isDraggingThis ? "none" : "box-shadow 0.15s",
                       zIndex: isDraggingThis ? 50 : 1,
                     }}>
@@ -1065,6 +1124,7 @@ export default function LifePlanner() {
                         position:"absolute", top:-6, right:-6, width:18, height:18, borderRadius:"50%",
                         background:T.card, border:`1px solid ${T.border}`, color:T.muted, fontSize:"0.7rem",
                         display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", padding:0, lineHeight:1,
+                        transform: `scale(${1/noteScale})`,
                       }}>×</button>
                   </div>
                 );
@@ -1081,8 +1141,8 @@ export default function LifePlanner() {
         const dayEvs = allEvents.filter(e => e.date === ds);
         const holiday = CO_HOLIDAYS[ds];
         return (
-          <div style={s.overlay} onClick={e=>{if(e.target===e.currentTarget)setShowDayPanel(false);}}>
-            <div style={s.modal}>
+          <div className="planner-overlay-anim" style={s.overlay} onClick={e=>{if(e.target===e.currentTarget)setShowDayPanel(false);}}>
+            <div className="planner-pop-anim" style={s.modal}>
               <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"1rem"}}>
                 <div style={s.modalTitle}>{MONTHS[month]} {selected}</div>
                 <button onClick={()=>setShowDayPanel(false)} style={{background:"none",border:"none",color:T.muted,fontSize:"1.3rem",cursor:"pointer",lineHeight:1}}>×</button>
@@ -1120,8 +1180,8 @@ export default function LifePlanner() {
 
       {/* ── ADD EVENT MODAL ── */}
       {showModal && (
-        <div style={s.overlay} onClick={e=>{if(e.target===e.currentTarget)setShowModal(false);}}>
-          <div style={s.modal}>
+        <div className="planner-overlay-anim" style={s.overlay} onClick={e=>{if(e.target===e.currentTarget)setShowModal(false);}}>
+          <div className="planner-pop-anim" style={s.modal}>
             <div style={s.modalTitle}>Add to {MONTHS[month]} {selected}</div>
             <label style={s.label}>What is it?</label>
             <input style={s.input} placeholder="e.g. Gym session, Dentist, Trip…" value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))} />
@@ -1204,8 +1264,11 @@ export default function LifePlanner() {
         const noteMutedColor = noteTextColor === "#000000" ? "rgba(0,0,0,0.55)" : "rgba(255,255,255,0.7)";
         const pillBg = noteTextColor === "#000000" ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.18)";
         const pillBorder = noteTextColor === "#000000" ? "rgba(0,0,0,0.18)" : "rgba(255,255,255,0.3)";
+        const originX = activeNote ? `${activeNote.x ?? 50}%` : "50%";
+        const originY = activeNote ? `${activeNote.y ?? 50}%` : "50%";
         return (
           <div
+            className="planner-overlay-anim"
             style={{
               position: "fixed", inset: 0, zIndex: 500,
               background: "rgba(0,0,0,0.6)",
@@ -1214,14 +1277,17 @@ export default function LifePlanner() {
             }}
             onClick={(e) => { if (e.target === e.currentTarget) closeNote(); }}
           >
-            <div style={{
-              background: noteColor,
-              borderRadius: 16,
-              padding: "1.25rem",
-              width: "100%",
-              maxWidth: 340,
-              boxShadow: "0 20px 50px rgba(0,0,0,0.5)",
-            }}>
+            <div
+              className="planner-pop-anim"
+              style={{
+                background: noteColor,
+                borderRadius: 16,
+                padding: "1.25rem",
+                width: "100%",
+                maxWidth: 340,
+                boxShadow: "0 20px 50px rgba(0,0,0,0.5)",
+                transformOrigin: `${originX} ${originY}`,
+              }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.75rem" }}>
                 <button
                   onClick={()=>setColorPickerCtx({type:"note", key:openNoteId})}
