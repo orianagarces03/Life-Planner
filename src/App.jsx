@@ -153,6 +153,33 @@ export default function LifePlanner() {
   // ── Theme & categories state ──
   const [theme, setTheme]   = useState(DEFAULT_THEME);
   const [cats, setCats]     = useState(DEFAULT_CATEGORIES);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+
+  // Load saved theme + category settings on first mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('planner-settings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.theme) setTheme(t => ({ ...t, ...parsed.theme }));
+        if (parsed.cats) setCats(c => ({ ...c, ...parsed.cats }));
+      }
+    } catch {
+      // no saved settings yet, or corrupted — defaults stay
+    } finally {
+      setSettingsLoaded(true);
+    }
+  }, []);
+
+  // Save theme + category settings whenever they change (after initial load)
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    try {
+      localStorage.setItem('planner-settings', JSON.stringify({ theme, cats }));
+    } catch {
+      // storage full or blocked; not critical to block UI
+    }
+  }, [theme, cats, settingsLoaded]);
   const [customHeading, setCustomHeading] = useState("");
   const [customBody, setCustomBody]       = useState("");
 
