@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 // ─── DEFAULT THEME ───────────────────────────────────────────────
 const DEFAULT_THEME = {
@@ -12,6 +12,7 @@ const DEFAULT_THEME = {
   headingFont: "Syne",
   bodyFont: "Inter",
   darkMode: true,
+  fontScale: 1,
 };
 
 const LIGHT_OVERRIDES = {
@@ -42,6 +43,16 @@ const ACCENT_PRESETS = [
   { label: "Mint", value: "#55efc4" },
   { label: "Orange", value: "#ff9f43" },
 ];
+
+const FONT_SIZES = [
+  { label: "Small", value: 0.88 },
+  { label: "Default", value: 1 },
+  { label: "Large", value: 1.15 },
+  { label: "Extra Large", value: 1.3 },
+];
+
+// Default sticker emoji choices the user can drop onto the screen
+const DEFAULT_STICKERS = ["🌱","☕","🌸","⭐","🎧","📌","🐱","🌙","💫","🍃","🧡","✨"];
 
 // ─── DEFAULT CATEGORIES ──────────────────────────────────────────
 const DEFAULT_CATEGORIES = {
@@ -149,11 +160,16 @@ export default function LifePlanner() {
   const [toast, setToast]         = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab]   = useState("theme");
+  const [stickers, setStickers] = useState([]); // {id, emoji or imgSrc, x, y}
+  const [draggingId, setDraggingId] = useState(null);
+  const dragOffset = useRef({ x: 0, y: 0 });
 
   // ── Theme & categories state ──
   const [theme, setTheme]   = useState(DEFAULT_THEME);
   const [cats, setCats]     = useState(DEFAULT_CATEGORIES);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [showSplash, setShowSplash] = useState(false);
+  const [splashFading, setSplashFading] = useState(false);
 
   // Load saved theme + category settings on first mount
   useEffect(() => {
@@ -163,6 +179,7 @@ export default function LifePlanner() {
         const parsed = JSON.parse(saved);
         if (parsed.theme) setTheme(t => ({ ...t, ...parsed.theme }));
         if (parsed.cats) setCats(c => ({ ...c, ...parsed.cats }));
+        if (parsed.stickers) setStickers(parsed.stickers);
       }
     } catch {
       // no saved settings yet, or corrupted — defaults stay
@@ -171,15 +188,24 @@ export default function LifePlanner() {
     }
   }, []);
 
-  // Save theme + category settings whenever they change (after initial load)
+  // Save theme + category + sticker settings whenever they change (after initial load)
   useEffect(() => {
     if (!settingsLoaded) return;
     try {
-      localStorage.setItem('planner-settings', JSON.stringify({ theme, cats }));
+      localStorage.setItem('planner-settings', JSON.stringify({ theme, cats, stickers }));
     } catch {
       // storage full or blocked; not critical to block UI
     }
-  }, [theme, cats, settingsLoaded]);
+  }, [theme, cats, stickers, settingsLoaded]);
+
+  // Show splash every time the app opens
+  useEffect(() => {
+    setShowSplash(true);
+    const fadeTimer = setTimeout(() => setSplashFading(true), 1400);
+    const removeTimer = setTimeout(() => setShowSplash(false), 1900);
+    return () => { clearTimeout(fadeTimer); clearTimeout(removeTimer); };
+  }, []);
+
   const [customHeading, setCustomHeading] = useState("");
   const [customBody, setCustomBody]       = useState("");
 
@@ -238,13 +264,16 @@ export default function LifePlanner() {
     setLocal(p=>[...p,ev]); setShowModal(false); setShowDayPanel(false);
     try {
       const dt = form.time ? `${date}T${form.time}:00` : null;
+      const isFamily = form.category === "family";
+      const reminderMinutes = isFamily ? 2880 : 120; // 2 days vs 2 hours before
+      const reminderLabel = isFamily ? "2 days before" : "2 hours before";
       const prompt = dt
-        ? `Use Google Calendar MCP to create event "${form.title}" starting ${dt} (1hr) with description "${form.note||""} | Category: ${cats[form.category]?.label}". Return event id only.`
-        : `Use Google Calendar MCP to create all-day event "${form.title}" on ${date} with description "${form.note||""} | Category: ${cats[form.category]?.label}". Return event id only.`;
+        ? `Use Google Calendar MCP to create event "${form.title}" starting ${dt} (1hr) with description "${form.note||""} | Category: ${cats[form.category]?.label}". Set a popup notification reminder ${reminderMinutes} minutes before the event start (${reminderLabel}), overriding any default reminders. Return event id only.`
+        : `Use Google Calendar MCP to create all-day event "${form.title}" on ${date} with description "${form.note||""} | Category: ${cats[form.category]?.label}". Set a popup notification reminder ${reminderMinutes} minutes before the event start (${reminderLabel}), overriding any default reminders. Return event id only.`;
       const data = await callClaude(prompt);
       const id = data.content?.find(b=>b.type==="text")?.text?.trim().replace(/"/g,"");
       if (id && id.length>5) setLocal(p=>p.map(e=>e.id===ev.id?{...e,id,fromGcal:true}:e));
-      showToast("Saved to Google Calendar ✓");
+      showToast(`Saved · reminder set ${reminderLabel} ✓`);
     } catch { showToast("Saved locally (sync failed)","warn"); }
     finally { setSaving(false); }
   }
@@ -260,6 +289,106 @@ export default function LifePlanner() {
   function prevMonth() { if(month===0){setMonth(11);setYear(y=>y-1);}else setMonth(m=>m-1); }
   function nextMonth() { if(month===11){setMonth(0);setYear(y=>y+1);}else setMonth(m=>m+1); }
 
+  // ── Sticker handlers ──
+  function addSticker(content, isImage=false) {
+    const id = `sticker-${Date.now()}`;
+    setStickers(prev => [...prev, {
+      id,
+      content,
+      isImage,
+      x: 50 + Math.random() * 30, // vw-ish start position (percentage based)
+      y: 30 + Math.random() * 30,
+      scale: 1,
+    }]);
+  }
+
+  function removeSticker(id) {
+    setStickers(prev => prev.filter(s => s.id !== id));
+  }
+
+  function handleStickerPointerDown(e, sticker) {
+    e.preventDefault();
+    e.stopPropagation();
+    const touches = e.touches;
+    if (touches && touches.length === 2) {
+      // Pinch start — record initial distance and sticker's current scale
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      dragOffset.current.pinchStartDist = Math.hypot(dx, dy);
+      dragOffset.current.pinchStartScale = sticker.scale || 1;
+      dragOffset.current.pinching = true;
+    } else {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const clientX = e.clientX ?? touches?.[0]?.clientX ?? 0;
+      const clientY = e.clientY ?? touches?.[0]?.clientY ?? 0;
+      dragOffset.current = {
+        offsetX: clientX - rect.left,
+        offsetY: clientY - rect.top,
+        pinching: false,
+      };
+    }
+    setDraggingId(sticker.id);
+  }
+
+  function handlePointerMove(e) {
+    if (!draggingId) return;
+    const touches = e.touches;
+
+    // Two fingers on the sticker → resize, ignore position changes
+    if (touches && touches.length === 2) {
+      if (!dragOffset.current.pinching) {
+        const dx0 = touches[0].clientX - touches[1].clientX;
+        const dy0 = touches[0].clientY - touches[1].clientY;
+        dragOffset.current.pinchStartDist = Math.hypot(dx0, dy0);
+        dragOffset.current.pinchStartScale = stickers.find(s=>s.id===draggingId)?.scale || 1;
+        dragOffset.current.pinching = true;
+      }
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      const ratio = dist / (dragOffset.current.pinchStartDist || dist);
+      const newScale = Math.max(0.4, Math.min(3, dragOffset.current.pinchStartScale * ratio));
+      setStickers(prev => prev.map(s => s.id === draggingId ? { ...s, scale: newScale } : s));
+      return;
+    }
+
+    // Single finger / mouse → drag position
+    if (dragOffset.current.pinching) return; // just released second finger, skip a beat
+    const clientX = e.clientX ?? touches?.[0]?.clientX;
+    const clientY = e.clientY ?? touches?.[0]?.clientY;
+    if (clientX == null) return;
+    const xPct = ((clientX - dragOffset.current.offsetX) / window.innerWidth) * 100;
+    const yPct = ((clientY - dragOffset.current.offsetY) / window.innerHeight) * 100;
+    setStickers(prev => prev.map(s => s.id === draggingId
+      ? { ...s, x: Math.max(0, Math.min(92, xPct)), y: Math.max(0, Math.min(94, yPct)) }
+      : s
+    ));
+  }
+
+  function handlePointerUp(e) {
+    // If one finger lifted but one remains, switch back to drag mode cleanly
+    if (e?.touches && e.touches.length === 1 && draggingId) {
+      const rect = e.target?.getBoundingClientRect?.() || { left: 0, top: 0 };
+      dragOffset.current = {
+        offsetX: e.touches[0].clientX - rect.left,
+        offsetY: e.touches[0].clientY - rect.top,
+        pinching: false,
+      };
+      return;
+    }
+    setDraggingId(null);
+    dragOffset.current = {};
+  }
+
+  function handleStickerImageUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => addSticker(reader.result, true);
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  }
+
   const upcoming = [...allEvents]
     .filter(e=>e.date>=todayStr&&(filterCat==="all"||e.category===filterCat))
     .sort((a,b)=>a.date.localeCompare(b.date)).slice(0,30);
@@ -269,7 +398,7 @@ export default function LifePlanner() {
 
   // ── Styles ──
   const s = {
-    root:      { minHeight:"100vh", background:T.bg, color:T.text, fontFamily:`'${T.bodyFont}', sans-serif`, fontWeight:300, padding:"1.5rem 1rem 4rem", transition:"background 0.3s, color 0.3s" },
+    root:      { minHeight:"100vh", background:T.bg, color:T.text, fontFamily:`'${T.bodyFont}', sans-serif`, fontWeight:300, padding:"1.5rem 1rem 4rem", transition:"background 0.3s, color 0.3s", fontSize:`${(T.fontScale||1)*16}px` },
     wrap:      { maxWidth:680, margin:"0 auto" },
     eyebrow:   { fontSize:"0.68rem", letterSpacing:"0.18em", textTransform:"uppercase", color:T.accent, marginBottom:"0.4rem" },
     h1:        { fontFamily:`'${T.headingFont}', sans-serif`, fontSize:"clamp(1.6rem,5vw,2.4rem)", fontWeight:800, letterSpacing:"-0.02em", lineHeight:1.1 },
@@ -348,6 +477,7 @@ export default function LifePlanner() {
           <button style={s.stab(settingsTab==="theme")}  onClick={()=>setSettingsTab("theme")}>🎨 Theme</button>
           <button style={s.stab(settingsTab==="fonts")}  onClick={()=>setSettingsTab("fonts")}>✏️ Fonts</button>
           <button style={s.stab(settingsTab==="colors")} onClick={()=>setSettingsTab("colors")}>🏷️ Categories</button>
+          <button style={s.stab(settingsTab==="stickers")} onClick={()=>setSettingsTab("stickers")}>🌱 Stickers</button>
         </div>
 
         {/* THEME TAB */}
@@ -372,6 +502,15 @@ export default function LifePlanner() {
             <input style={{...s.colorInput, marginTop:"0.65rem"}} type="color" value={theme.accent}
               onChange={e=>setTheme(t=>({...t,accent:e.target.value}))} title="Pick any color" />
             <div style={{fontSize:"0.72rem", color:T.muted, marginTop:"0.3rem"}}>Or pick any custom color above ↑</div>
+            <div style={s.divider} />
+            {/* Font size */}
+            <div style={{...s.label, marginBottom:"0.5rem"}}>Font size</div>
+            <div style={{display:"flex", gap:"0.4rem", flexWrap:"wrap"}}>
+              {FONT_SIZES.map(fs=>(
+                <button key={fs.label} style={s.stab(theme.fontScale===fs.value)}
+                  onClick={()=>setTheme(t=>({...t,fontScale:fs.value}))}>{fs.label}</button>
+              ))}
+            </div>
           </>
         )}
 
@@ -414,13 +553,98 @@ export default function LifePlanner() {
               onClick={()=>setCats(DEFAULT_CATEGORIES)}>Reset to defaults</button>
           </>
         )}
+
+        {/* STICKERS TAB */}
+        {settingsTab==="stickers" && (
+          <>
+            <div style={s.label}>Add a sticker to your screen</div>
+            <div style={{fontSize:"0.78rem", color:T.muted, marginBottom:"0.75rem", lineHeight:1.5}}>
+              Tap one to drop it on screen, then drag it anywhere — it stays right where you let go.
+            </div>
+            <div style={{display:"grid", gridTemplateColumns:"repeat(6, 1fr)", gap:"0.4rem", marginBottom:"1rem"}}>
+              {DEFAULT_STICKERS.map(emoji=>(
+                <button key={emoji}
+                  onClick={()=>{ addSticker(emoji,false); showToast("Sticker added — drag it anywhere ✓"); }}
+                  style={{fontSize:"1.4rem", background:T.surface, border:`1px solid ${T.border}`, borderRadius:8, padding:"0.5rem 0", cursor:"pointer"}}>
+                  {emoji}
+                </button>
+              ))}
+            </div>
+            <div style={s.divider} />
+            <div style={s.label}>Upload your own image</div>
+            <label style={{...s.cancelBtn, display:"block", textAlign:"center", marginBottom:"0.9rem", cursor:"pointer"}}>
+              📤 Choose image (PNG, JPG)
+              <input type="file" accept="image/*" onChange={handleStickerImageUpload} style={{display:"none"}} />
+            </label>
+            {stickers.length > 0 && (
+              <>
+                <div style={s.divider} />
+                <div style={s.label}>Active stickers ({stickers.length})</div>
+                <div style={{display:"flex", flexWrap:"wrap", gap:"0.5rem", marginTop:"0.4rem"}}>
+                  {stickers.map(st=>(
+                    <div key={st.id} style={{display:"flex", alignItems:"center", gap:"0.3rem", background:T.surface, border:`1px solid ${T.border}`, borderRadius:8, padding:"0.3rem 0.5rem"}}>
+                      {st.isImage ? <img src={st.content} alt="" style={{width:18,height:18,objectFit:"contain"}}/> : <span style={{fontSize:"1rem"}}>{st.content}</span>}
+                      <button onClick={()=>removeSticker(st.id)} style={{background:"none",border:"none",color:T.muted,cursor:"pointer",fontSize:"0.85rem",padding:0}}>×</button>
+                    </div>
+                  ))}
+                </div>
+                <button style={{...s.cancelBtn, marginTop:"0.75rem", width:"100%"}}
+                  onClick={()=>{ setStickers([]); showToast("All stickers cleared"); }}>Clear all stickers</button>
+              </>
+            )}
+          </>
+        )}
       </div>
     );
   }
 
   return (
-    <div style={s.root}>
+    <div
+      style={s.root}
+      onMouseMove={handlePointerMove}
+      onMouseUp={handlePointerUp}
+      onTouchMove={handlePointerMove}
+      onTouchEnd={handlePointerUp}
+    >
       <link href={fontUrl} rel="stylesheet" />
+
+      {/* ── SPLASH SCREEN (once per day) ── */}
+      {showSplash && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 1000,
+          background: T.bg,
+          display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center",
+          textAlign: "center",
+          padding: "0 2rem",
+          opacity: splashFading ? 0 : 1,
+          transition: "opacity 0.5s ease",
+          pointerEvents: "none",
+        }}>
+          <div style={{
+            fontFamily: `'${T.headingFont}', sans-serif`,
+            fontWeight: 800,
+            fontSize: "1.15rem",
+            color: T.text,
+            letterSpacing: "-0.01em",
+            textAlign: "center",
+            lineHeight: 1.4,
+            opacity: splashFading ? 0 : 1,
+            transform: splashFading ? "translateY(-6px)" : "translateY(0)",
+            transition: "opacity 0.6s ease, transform 0.6s ease",
+          }}>
+            Your <span style={{ color: T.accent }}>month,</span> in one place.
+          </div>
+          <div style={{
+            fontSize: "0.68rem", color: T.muted, marginTop: "0.5rem",
+            textAlign: "center",
+            opacity: splashFading ? 0 : 1, transition: "opacity 0.6s ease",
+          }}>
+            {MONTHS[month]} {year}
+          </div>
+        </div>
+      )}
+
       <div style={s.wrap}>
 
         {/* Header */}
@@ -595,6 +819,9 @@ export default function LifePlanner() {
                 </button>
               ))}
             </div>
+            <div style={{fontSize:"0.74rem", color:T.muted, marginBottom:"0.9rem", marginTop:"-0.4rem"}}>
+              🔔 Reminder: {form.category==="family" ? "2 days before" : "2 hours before"}
+            </div>
             <label style={s.label}>Note (optional)</label>
             <input style={s.input} placeholder="e.g. 8am, bring ID, 3 nights…" value={form.note} onChange={e=>setForm(f=>({...f,note:e.target.value}))} />
             <div style={s.modalActions}>
@@ -607,6 +834,51 @@ export default function LifePlanner() {
 
       {/* ── TOAST ── */}
       {toast && <div style={s.toast(toast.type)}>{toast.msg}</div>}
+
+      {/* ── FLOATING STICKERS ── */}
+      {stickers.map(st => (
+        <div
+          key={st.id}
+          onMouseDown={(e) => handleStickerPointerDown(e, st)}
+          onTouchStart={(e) => handleStickerPointerDown(e, st)}
+          style={{
+            position: "fixed",
+            left: `${st.x}%`,
+            top: `${st.y}%`,
+            zIndex: 300,
+            cursor: draggingId === st.id ? "grabbing" : "grab",
+            userSelect: "none",
+            touchAction: "none",
+            width: 56,
+            height: 56,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: st.isImage ? 0 : "2rem",
+            transform: `scale(${st.scale || 1})`,
+            transformOrigin: "center center",
+            filter: draggingId === st.id ? "drop-shadow(0 8px 16px rgba(0,0,0,0.4))" : "drop-shadow(0 2px 6px rgba(0,0,0,0.25))",
+            transition: draggingId === st.id ? "none" : "filter 0.15s",
+          }}
+        >
+          {st.isImage ? (
+            <img src={st.content} alt="sticker" style={{ width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none" }} />
+          ) : st.content}
+          {/* remove button — counter-scaled so it stays tappable regardless of sticker size */}
+          <button
+            onClick={(e) => { e.stopPropagation(); removeSticker(st.id); }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+            style={{
+              position: "absolute", top: -6, right: -6, width: 18, height: 18,
+              borderRadius: "50%", background: T.card, border: `1px solid ${T.border}`,
+              color: T.muted, fontSize: "0.7rem", display: "flex", alignItems: "center",
+              justifyContent: "center", cursor: "pointer", padding: 0, lineHeight: 1,
+              transform: `scale(${1/(st.scale || 1)})`,
+            }}
+          >×</button>
+        </div>
+      ))}
     </div>
   );
 }
