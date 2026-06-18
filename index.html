@@ -5,28 +5,28 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Life Planner</title>
     <meta name="description" content="My personal life planner with Google Calendar sync" />
-    <link rel="icon" type="image/png" href="/icon-192.png" />
-    <!-- PWA -->
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <!-- PWA support -->
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#0f0f13" />
-    <!-- iOS -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Planner" />
-    <link rel="apple-touch-icon" href="/icon-180.png" />
-    <link rel="apple-touch-icon" sizes="152x152" href="/icon-152.png" />
-    <link rel="apple-touch-icon" sizes="167x167" href="/icon-167.png" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png" />
-    <!-- Splash screens iOS -->
-    <meta name="mobile-web-app-capable" content="yes" />
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body, #root {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        min-height: 100%;
+        background: #0f0f13;
+      }
+      html { height: 100%; }
+      body { min-height: 100vh; overflow-x: hidden; }
+    </style>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
-    <script>
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
-      }
-    </script>
   </body>
 </html>
