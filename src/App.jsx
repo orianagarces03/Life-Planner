@@ -141,9 +141,16 @@ function gcalToLocal(e) {
 }
 
 async function callClaude(prompt) {
+  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("Missing VITE_ANTHROPIC_API_KEY");
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-beta": "mcp-client-2025-04-04",
+    },
     body: JSON.stringify({
       model: "claude-sonnet-4-6", max_tokens: 1000,
       mcp_servers: [{ type: "url", url: "https://calendar.googleapis.com/mcp/v1", name: "google-calendar" }],
@@ -186,7 +193,7 @@ export default function LifePlanner() {
   const [showSplash, setShowSplash] = useState(false);
   const [splashFading, setSplashFading] = useState(false);
 
-  // Load saved theme + category settings on first mount
+  // Load saved settings + events on first mount
   useEffect(() => {
     try {
       const saved = localStorage.getItem('planner-settings');
@@ -196,6 +203,7 @@ export default function LifePlanner() {
         if (parsed.cats) setCats(c => ({ ...c, ...parsed.cats }));
         if (parsed.stickers) setStickers(parsed.stickers);
         if (parsed.notes) setNotes(parsed.notes);
+        if (parsed.localEvents) setLocal(parsed.localEvents);
       }
     } catch {
       // no saved settings yet, or corrupted — defaults stay
@@ -204,15 +212,15 @@ export default function LifePlanner() {
     }
   }, []);
 
-  // Save theme + category + sticker + note settings whenever they change (after initial load)
+  // Save all settings + events whenever they change (after initial load)
   useEffect(() => {
     if (!settingsLoaded) return;
     try {
-      localStorage.setItem('planner-settings', JSON.stringify({ theme, cats, stickers, notes }));
+      localStorage.setItem('planner-settings', JSON.stringify({ theme, cats, stickers, notes, localEvents }));
     } catch {
       // storage full or blocked; not critical to block UI
     }
-  }, [theme, cats, stickers, notes, settingsLoaded]);
+  }, [theme, cats, stickers, notes, localEvents, settingsLoaded]);
 
   // Show splash every time the app opens
   useEffect(() => {
